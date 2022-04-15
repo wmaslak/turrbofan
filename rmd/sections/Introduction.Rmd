@@ -1,0 +1,33 @@
+---
+title: "Introduction"
+output: html_document
+---
+
+# Introduction
+
+The objective of a predictive maintenance task is to predict failure of a certain machine
+or predict how much time is left for them before they brake.
+
+In this project I tackle the second instance of the problem which can be formulated a s a regression task.
+
+Namely, I use the NASA turbofan dataset to predict the Remaining Usefull Life of 
+turbofan engines.
+
+As every engine will certainly brake after some time, the key question to answer is
+**when will it brake?**
+
+The dataset is pre-splitted into train and test set. 
+
+In the train set we observe engines that run to the point of failure. In other words, we observe sensors of a running engine, the after some time it develops a fault which causes it to ultimately stop after some period and then the engine is no longer observed.
+It is not a problem that we observe only engines that ultimately broke, as we are not trying to answer the question **whether the engine will brake** bu **when will it brake**.
+
+In the test set we observe the engines work only for some period of time, possibly before
+any fault even occurred and our task is to predict the Remaining Useful Life of the given engines.
+
+I chose 2 out of 4 datasets provided in the NASA dataset. 
+The first one contains 100 engine units which end their work with one type of fault and run under one operational setting.
+
+The second set contains 248 units which run under 6 different operational settings and break 
+because of 2 different ("HPC Degradation", "Fan Degradation") types of fault, however we do not know if which engine developed which kind of fault. 
+
+The former set will be regarded as simple and the latter as complicated. Indeed the later dataset is way more complicated than the former so the models are anticipadet to give worse results on the complicated dataset. 

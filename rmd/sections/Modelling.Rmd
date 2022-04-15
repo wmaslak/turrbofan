@@ -1,0 +1,460 @@
+# Modelling
+
+
+```{r load data TO DELETE}
+source("../../R/load_data.R")
+load_data('rmd/sections/Modelling.Rmd')
+
+```
+
+
+
+```{r validate foo}
+# function that validates a model on the out-of-sample data
+get_validation_reg_score <- function(model,test_df,
+                                     target_col = "act_RUL",
+                                     drop_col=drop_cols){
+  preds <- predict(model,test_df %>%
+          select(-one_of(drop_col)))
+reg_score <- postResample(preds,test_df[[target_col]])
+return(reg_score)
+}
+
+```
+
+```{r}
+# function that plots predicted vs. actual RUL from the test set
+plot_pred_vs_act <- function(model,test_df,
+                                     target_col = "act_RUL",
+                                     drop_col=drop_cols){
+  preds <- predict(model,test_df %>%
+          select(-one_of(drop_col)))
+  act <- test_df[[target_col]]
+  df <- as.data.frame(cbind('predicted' = preds,'actual' = act))
+  
+  over <- nrow(df[df$predicted>df$actual,])/nrow(df) %>% round(2)
+  under <- nrow(df[df$predicted<df$actual,])/nrow(df)  %>% round(2)
+  
+  plot <- ggplot(df)+
+    geom_point(aes(x=actual,y=predicted))+
+    geom_abline(a=1,b=0, col = 'steelblue',linetype= 'dashed')+
+    coord_fixed()+
+    ggtitle("RUL: actual vs. predicted")+
+    scale_x_continuous(breaks = round(seq(min(preds,act)-5,max(preds,act)-5,length.out = 5)))+
+    scale_y_continuous(breaks = round(seq(min(preds,act)-5,max(preds,act)-5,length.out = 5)))+
+    annotate('text',20,120,label=paste0("Over-estimation:\n" ,round(over*100),"% of cases"))+
+    annotate('text',120,20,label=paste0("Under-estimation:\n" ,round(under*100),"% of cases"))
+  
+}
+```
+
+
+## Two datasets {.tabset}
+
+### Simple dataset
+
+Let's try to limit the RUL. RUL may not be decreasing linearly. It may start to decrease only after a fault is developed. To model this situation, lets simply put a "cap" on the RUL, so that it is constant at the beginning and then starts to decrease linearly. Let's see if it improves results.
+
+We will experimentally choose the best "cap" by visually inspecting the relationship between mean sensor levels and RUL. As we can see, a "capped" RUL correlates better with the changing sensor levels, as initially they are rather stationary and start to "explode" only after some time.
+
+
+```{r RUL find cap simp}
+
+cap_for_RUL <- 125
+mean_sensors_df <- data1 %>% 
+  group_by(RUL) %>% 
+  summarise(across(starts_with("sensor"),mean)) %>% 
+  mutate(across(starts_with("sensor"),scale),
+         scaled_RUL = scale(RUL)) %>%
+  pivot_longer(-c(RUL,scaled_RUL)) 
+
+RUL_df <- data1 %>% 
+  select(RUL) %>% 
+  mutate(cap_RUL = pmin(cap_for_RUL,RUL)) %>% 
+  mutate(across(ends_with("RUL"),scale,.names ="scaled_{.col}")) %>% 
+  pivot_longer(-c(RUL,cap_RUL)) %>% 
+  rename("RUL version" = "name")
+
+  ggplot()+
+  geom_line(data = mean_sensors_df ,aes(x=RUL,y=value,color=name), show.legend = F)+
+  geom_line(data = RUL_df,aes(x=RUL,y=value,linetype=`RUL version`),size = 1)+
+  scale_x_reverse()
+
+```
+
+The plot above presents relationship between RUL and a subset of sensors.
+The values are scaled so that they can be ploted on a single y axis.
+
+
+#### Baseline model
+
+Our baseline model will be a simple linear regression with all the sensor data.
+
+```{r baseline simp}
+
+set.seed(970416)
+drop_cols <- colnames(data1)[1:5]
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated 10 times
+                           repeats = 10)
+
+
+baseline_trained_lm <- caret::train(RUL ~ ., data = data1 %>% select(-one_of(drop_cols)), 
+                 method = "lm", 
+                 trControl = fitControl)
+
+
+baseline_score_simp <- get_validation_reg_score(baseline_trained_lm,test_data1_s)
+print('Baseline RMSE in training is:')
+baseline_trained_lm$results %>% arrange(RMSE)
+
+```
+
+Look's like the best RUL "cap" to use for baseline is around `cap_for_RUL`, so let's 
+mutate the data accordingly.
+
+Let's see if it actually changes our baseline results:
+
+```{r compare baseline cap vs nocap simp}
+cap_for_RUL <- 125
+data1_cap <- data1 %>% mutate(RUL = pmin(cap_for_RUL,RUL))
+drop_cols <- colnames(data1)[1:5]
+
+
+baseline_trained_cap <- caret::train(RUL ~ .,
+                  data = data1_cap %>% select(-one_of(drop_cols)), 
+                  method = "lm")
+
+baseline_score_cap_simp <- get_validation_reg_score(baseline_trained_cap,test_data1_s)
+
+baseline_trained_cap$results %>% arrange(RMSE)
+```
+```{r}
+print("Without capping RUL...")
+(plot_pred_vs_act(baseline_trained_lm,test_data1_s))
+print("With capped RUL...")
+(plot_pred_vs_act(baseline_trained_cap,test_data1_s))
+```
+
+The capping seems to be doing good work, the RMSE decreases more than 50%. Also the 
+plot of predicted vs. actual looks way better for capped RUL.
+So let's continue with capped RUL.
+
+```{r make RUL cap}
+cap_for_RUL <- 125
+data1 <- data1 %>% mutate(RUL = pmin(cap_for_RUL,RUL))
+
+```
+
+#### Random forest
+
+We can now move on to fitting a more complex model. The chunk below performs a gridsearch
+over a grid of relevant parameters to find a configuration that minimizes the RMSE in a 5-fold CV. The object is then saved. The chunk is commented out, so that the report generates quickly.
+
+```{r RF }
+
+# set.seed(970416)
+# drop_cols <- colnames(data1)[1:5]
+# 
+# tune_grid <- expand.grid(
+#   .mtry = c(2,4,6,8),
+#   .splitrule = c("variance","extratrees","maxstat","beta"),
+#   .min.node.size = c(20,50,100,150,200,400)
+# )
+# fitControl <- trainControl(## 5-fold CV
+#                            method = "repeatedcv",
+#                            number = 5,
+#                            ## repeated 5 times
+#                            repeats = 5,
+#                            verboseIter = T)
+# 
+# 
+# rf_trained_1 <- train(RUL ~ ., data = data1 %>% select(-one_of(drop_cols)), 
+#                  method = "ranger", 
+#                  trControl = fitControl,
+#                  tuneGrid = tune_grid,
+#                  num.trees = 500,
+#                  verbose = T)
+# rf_trained_1$results %>% arrange(RMSE)
+# saveRDS(rf_trained_1,file = here("objects/rf_trained_04_01.rds"))
+```
+Below we evaluate the best fitted model after reading it from an RDS object.
+
+```{r}
+rf_fit <- readRDS(here("objects/rf_trained_04_01.rds"))
+print("The RMSE for the best parametrization of Random Forest is...")
+rf_fit$results %>% arrange(RMSE) %>% head(1) %>% .[['RMSE']]
+```
+
+Let's see the plot of predicted vs. actual RUL:
+
+```{r}
+(plot_pred_vs_act(rf_fit,test_data1_s))
+```
+
+We see that the capping has another advantage. The model now has smaller fraction
+of overestimating cases which is desirable feature in the context of the predictive maintanenece task.
+
+#### XGBoost
+
+The second model is XGBoost. We also perform a gridsearch and save the object.
+
+```{r xgb}
+
+# drop_cols <- colnames(data1)[1:5]
+# # tune_grid <- expand.grid(nrounds=c(100,200,300,400),
+# #                         max_depth = c(3:7),
+# #                         eta = c(0.01,0.05,0.1,0.15,0.2),
+# #                         gamma = c(0.01,0.05,0.1,0.15,0.2,0.5),
+# #                         colsample_bytree = c(0.3,0.5,0.75,1),
+# #                         subsample = c(0.2,0.5,0.7,0.8),
+# #                         min_child_weight = c(0.2,0.7,1,1.3,1.8))
+# tune_grid <- expand.grid(nrounds=c(100,400),
+#                         max_depth = c(3:7),
+#                         eta = c(0.01,0.2),
+#                         gamma = c(0.01,0.5),
+#                         colsample_bytree = c(0.5,0.75,1),
+#                         subsample = c(0.5,0.8),
+#                         min_child_weight = c(0,1))
+# 
+# xgb_fit <- train(RUL ~.,
+#                 data = data1 %>% select(-one_of(drop_cols)),
+#                 method = "xgbTree",
+#                 trControl=fitControl,
+#                 tuneGrid = tune_grid
+#                 )
+# 
+# saveRDS(xgb_fit,here("objects/xgb_trained_04_01_B.rds"))
+# xgb_fit$results %>% arrange(RMSE)
+```
+
+```{r}
+xgb_fit <- readRDS(here("objects/xgb_trained_04_01_B.rds")) 
+print("The RMSE for the best parametrization of XGBoost is...")
+xgb_fit$results %>% arrange(RMSE) %>% head(1) %>% .[['RMSE']]
+```
+```{r}
+(plot_pred_vs_act(xgb_fit,test_data1_s))
+```
+
+Even though we have a slightly higher RMSE than in case of Random FOrest, we do
+have a better ratio of over- to  underestimaiton. Therefore, the model can still be
+taken into consideration.
+
+
+### Complicated dataset
+
+Here we proceed with exactly the same steps as in case of the simple dataset.
+THe only difference is that we need to dummy columns to account for the different operational setitngs.
+The grid searches were of course carried out separately for the complicated dataset.
+
+#### Baseline model
+
+Our baseline model will again be a simple linear regression.
+
+```{r baseline comp}
+
+set.seed(970416)
+add_dummies <- function(df,cols){
+  dums <- fastDummies::dummy_cols(df[cols])%>% select(-one_of(c(cols)))
+  
+  df_out <- cbind(df,dums)
+  
+  df_out <- df_out %>% select(-one_of(c(cols)))
+}
+
+
+data4_dums <- add_dummies(data4,'setting')
+test_data4_s_dums <- add_dummies(test_data4_s,'setting')
+drop_cols <- c(colnames(data4_dums)[1:5],"setting")
+dropfitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated 10 times
+                           repeats = 10)
+
+
+baseline_trained_lm <- caret::train(RUL ~ ., data = data4_dums %>% select(-one_of(drop_cols)), 
+                 method = "lm", 
+                 trControl = fitControl)
+
+
+baseline_score_comp <- get_validation_reg_score(baseline_trained_lm,test_data4_s_dums)
+baseline_trained_lm$results %>% arrange(RMSE)
+
+```
+
+
+
+```{r}
+
+cap_for_RUL <- 125
+mean_sensors_df <- data4_dums %>% filter(setting_100 == 1) %>% 
+  group_by(RUL) %>% 
+  summarise(across(starts_with("sensor"),mean)) %>% 
+  mutate(across(starts_with("sensor"),scale),
+         scaled_RUL = scale(RUL)) %>%
+  pivot_longer(-c(RUL,scaled_RUL)) 
+
+RUL_df <- data4_dums %>%  filter(setting_100 == 1) %>% 
+  select(RUL) %>% 
+  mutate(cap_RUL = pmin(cap_for_RUL,RUL)) %>% 
+  mutate(across(ends_with("RUL"),scale,.names ="scaled_{.col}")) %>% 
+  pivot_longer(-c(RUL,cap_RUL)) %>% 
+  rename("RUL version" = "name")
+
+  ggplot()+
+  geom_line(data = mean_sensors_df ,aes(x=RUL,y=value,color=name), show.legend = F)+
+  geom_line(data = RUL_df,aes(x=RUL,y=value,linetype=`RUL version`),size = 1)+
+  scale_x_reverse()
+```
+```{r compare baseline cap vs nocap comp}
+
+data4_cap <- data4_dums %>% mutate(RUL = pmin(cap_for_RUL,RUL))
+drop_cols <- colnames(data1)[1:5]
+
+baseline_trained_cap_comp <- caret::train(RUL ~ .,
+                  data = data4_cap %>% select(-one_of(drop_cols)), 
+                  method = "lm")
+
+baseline_score_cap_comp <- get_validation_reg_score(baseline_trained_cap,test_data4_s_dums)
+
+baseline_trained_cap_comp$results %>% arrange(RMSE)
+
+```
+
+Again we have a big gain in the CV.
+
+#### Random Forest
+
+Proceed with the same grid search as in simple dataset case.
+
+```{r RF comp, cache=TRUE}
+# # TODO RUN HERE
+# set.seed(970416)
+# drop_cols <- colnames(data4_dums)[1:5]
+# 
+# tune_grid <- expand.grid(
+#   .mtry = c(2,4,6,8),
+#   .splitrule = c("variance","extratrees","maxstat","beta"),
+#   .min.node.size = c(20,50,100,150,200)
+# )
+# fitControl <- trainControl(## 5-fold CV
+#                            method = "repeatedcv",
+#                            number = 5,
+#                            ## repeated 5 times
+#                            repeats = 5,
+#                            verboseIter = T)
+# 
+# 
+# rf_trained_1 <- caret::train(RUL ~ ., data = data4_cap %>% select(-one_of(drop_cols)),
+#                  method = "ranger",
+#                  trControl = fitControl,
+#                  tuneGrid = tune_grid,
+#                  num.trees = 500,
+#                  verbose = T)
+# rf_trained_1$results %>% arrange(RMSE)
+# saveRDS(rf_trained_1,file = here("objects/rf_trained_04_01_comp_cap.rds"))
+
+```
+
+
+Load the best model and see results:
+
+```{r}
+rf_fit <- readRDS(here("objects/rf_trained_04_01_comp_cap.rds")) 
+print("The RMSE for the best parametrization of Random Forest is...")
+rf_fit$results %>% arrange(RMSE) %>% head(1) %>% .[['RMSE']]
+```
+
+
+```{r}
+(plot_pred_vs_act(rf_fit,test_data4_s_dums))
+```
+
+
+#### XGBoost
+
+Same procedure as for RF above
+
+```{r xgb comp, cache=TRUE}
+# # TODO RUN HERE
+# set.seed(970416)
+# drop_cols <- colnames(data4_cap)[1:5]
+# tune_grid <- expand.grid(nrounds=c(100,200,300,400),
+#                         max_depth = c(3:7),
+#                         eta = c(0.05, 1),
+#                         gamma = c(0.01),
+#                         colsample_bytree = c(0.75),
+#                         subsample = c(0.50),
+#                         min_child_weight = c(0))
+# 
+# xgb_fit <- caret::train(RUL ~.,
+#                 data = data4_cap %>% select(-one_of(drop_cols)),
+#                 method = "xgbTree",
+#                 trControl=fitControl,
+#                 tuneGrid = tune_grid,
+#                 tuneLength = 10)
+# 
+# xgb_fit$results %>% arrange(RMSE)
+# saveRDS(xgb_fit,here("objects/xgb_trained_04_01_comp_cap.rds"))
+# xgb_fit$results %>% arrange(RMSE)
+```
+
+```{r}
+
+xgb_fit <- readRDS(here("objects/xgb_trained_04_01_comp_cap.rds"))
+
+print("The RMSE for the best parametrization of XGBoost is...")
+xgb_fit$results %>% arrange(RMSE) %>% head(1) %>% .[['RMSE']]
+
+
+```
+```{r}
+(plot_pred_vs_act(xgb_fit,test_data4_s_dums))
+```
+
+## Summary of results and validation scores
+
+We can now summarize the results and see the validation scores of the trained XGB and 
+RF models.
+
+```{r}
+xgb_fit_simp <- readRDS(here("objects/xgb_trained_04_01_B.rds"))
+xgb_fit_comp <- readRDS(here("objects/xgb_trained_04_01_comp_cap.rds"))
+
+rf_fit_simp <- readRDS(here("objects/rf_trained_04_01.rds"))
+rf_fit_comp <- readRDS(here("objects/rf_trained_04_01_comp_cap.rds"))
+
+print('Cross Validation scores:')
+lapply(list(xgb_fit_simp = xgb_fit_simp,
+            xgb_fit_comp = xgb_fit_comp,
+            rf_fit_simp = rf_fit_simp,
+            rf_fit_comp = rf_fit_comp),
+       function(x)  x$results %>% arrange(RMSE) %>% head(1) %>% .[['RMSE']])
+
+
+
+```
+
+
+We can conclude that the best performing model is Random Forest. Let's see if the same occurs on validation set:
+
+```{r}
+print("Validation scores (on the test set):")
+
+lapply(list(xgb_fit_simp = xgb_fit_simp,
+            rf_fit_simp = rf_fit_simp),
+       function(x)  get_validation_reg_score(x,test_data1_s))
+
+lapply(list(xgb_fit_comp = xgb_fit_comp,
+            rf_fit_comp = rf_fit_comp),
+       function(x)  get_validation_reg_score(x,test_data4_s_dums))
+```
+We can see that actually the results on the validation score are reversed!
+Without surprise, the models perform worse on the complicated dataset.
+
+XGBoost outperforms RF on the validation set. This shows that the better performance of
+RF was actually hidden overfitting.  

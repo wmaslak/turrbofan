@@ -1,0 +1,247 @@
+---
+title: "EDA"
+output: html_document
+---
+
+# Exploratory data analysis {.tabset}
+
+```{r load data}
+path_files <-   "../../data/selected_data/train"
+train_files <- list.files(path_files)
+data_names <- gsub('.{4}$', '', train_files)
+
+for (file in train_files) {
+  
+  path_file <- paste0(path_files,"/",file) 
+  df_name <- substr(file,1,nchar(file)-4)
+  assign( df_name ,readRDS(path_file) )
+  
+}
+
+
+```
+
+
+
+## Simple dataset 
+
+```{r table with basic stats simple}
+
+  data1 %>%
+  summarise( across(-(1:5), list(mean = mean), .names = "{.col}") ) %>% 
+  rbind(.,
+        data1 %>%
+          summarise( across(-(1:5), list(mean = sd), .names = "{.col}") )
+        ) %>% 
+  # cbind(
+  #   list(stat = c("mean","standard_dev")) %>% as.data.frame(.),
+  #   .) %>% 
+  `rownames<-`(c("mean","sd")) %>% 
+  #print()
+  #knitr::kable() -> a
+  #scroll_box(width = "100%")
+  
+  rmarkdown::paged_table() 
+
+```
+
+
+
+```{r constant sensors}
+    
+zero_sd_selector <- data1 %>%
+  summarise( across(-(1:5), list(mean = sd), .names = "{.col}")) %>% 
+  as.numeric() == 0 
+# sensors which have 0 sd
+constant_sensors <- data1 %>% 
+  select(-c(1:5)) %>% 
+  .[zero_sd_selector] %>% 
+  names() 
+saveRDS(constant_sensors,file = here("objects/constant_sensors_data1.rds"))
+sensors_all <- colnames(data1) %>% str_subset("sensor.*")
+# set difference
+sensors <- setdiff(sensors_all,constant_sensors)
+
+```
+
+
+
+As we can see sensors with the following numbers: `r str_extract(constant_sensors, "[0-9]+")`
+have zero standard deviation which means that they are constant. We will disregard
+them in further analysis as they carry no information.
+
+```{r sensors plot list simple}
+l_plt <- list()
+for (i in seq_along(sensors)) {
+  
+sensor_to_plot <- sensors[i]
+no_of_units_to_draw <- 10
+units_to_plot <- sample(data1$unit_no %>% unique(),no_of_units_to_draw)
+
+l_plt[[i]] <- data1 %>% 
+  select(-constant_sensors) %>% 
+  pivot_longer(cols = sensors, names_to = "sensor", values_to = "value") %>% 
+  filter(unit_no %in% units_to_plot & sensor == sensor_to_plot) %>% 
+  ggplot(aes(x=time, y=value, color = factor(unit_no)))+
+  geom_line(show.legend = F)+
+  ggtitle(sensor_to_plot)
+
+  
+}
+
+```
+
+
+
+### Plots of all sensors vs. RUL {.tabset}
+```{r tabs with plots, results='asis'}
+
+for (i in seq_along(sensors)) {
+  tmp <- l_plt[[i]]
+  cat("####",sensors[i],"\n")
+  print(tmp)
+  cat("\n\n")
+}
+
+```
+
+## Complicated dataset
+ 
+
+
+```{r table with basic stats complex}
+
+  data4 %>% group_by(setting) %>% 
+  summarise( across(-(1:5), list(mean = mean), .names = "{.col}") ) %>% 
+  rbind(.,
+        data4 %>% group_by(setting) %>% 
+          summarise( across(-(1:5), list(mean = sd), .names = "{.col}") )
+        ) %>% 
+  # cbind(
+  #   list(stat = c("mean","standard_dev")) %>% as.data.frame(.),
+  #   .) %>% 
+  `rownames<-`(c(paste("mean for setting",1:6),paste("sd",1:6))) %>% 
+  #print()
+  #knitr::kable() -> a
+  #scroll_box(width = "100%")
+  
+  rmarkdown::paged_table(options = list(rows.print = 12)) 
+
+```
+
+
+
+```{r constant sensors complex}
+    
+zero_sd_selector <- data4 %>% group_by(setting) %>% 
+  summarise( across(-(1:5), sd, .names = "{.col}")) %>% 
+  abs() %>% 
+  colSums() %>% 
+  as.numeric() == 0 
+zero_sd_selector <- zero_sd_selector[-1]
+# sensors which have 0 sd
+constant_sensors <- data4 %>% 
+  select(-c(1:5) & ! matches("setting")) %>% 
+  .[zero_sd_selector] %>% 
+  names() 
+saveRDS(constant_sensors,file = here("objects/constant_sensors_data4.rds"))
+sensors_all <- colnames(data4) %>% str_subset("sensor.*")
+# set difference
+sensors <- setdiff(sensors_all,constant_sensors)
+
+```
+
+
+
+As we can see sensors with the following numbers: `r str_extract(constant_sensors, "[0-9]+")`
+have zero standard deviation which means that they are constant. We will disregard
+them in further analysis as they carry no information.
+
+### Plots of all sensors vs. RUL {.tabset}
+
+```{r sensors plot list complex}
+l_plt_c <- list()
+for (i in seq_along(sensors)) {
+  
+sensor_to_plot <- sensors[i]
+no_of_units_to_draw <- 10
+units_to_plot <- sample(data4$unit_no %>% unique(),no_of_units_to_draw)
+setting_to_plot <- data4$setting %>% unique() %>%  sample(1)
+
+l_plt_c[[i]] <- data4 %>% 
+  select(-constant_sensors) %>% 
+  pivot_longer(cols = sensors, names_to = "sensor", values_to = "value") %>% 
+  filter(unit_no %in% units_to_plot & sensor == sensor_to_plot & setting == setting_to_plot ) %>% 
+  ggplot(aes(x=time, y=value, color = factor(unit_no)))+
+  geom_line(show.legend = F)+
+  ggtitle(paste(sensor_to_plot,"setting:",setting_to_plot))
+
+  
+}
+
+```
+
+
+
+```{r tabs with plots complex, results='asis'}
+
+for (i in seq_along(sensors)) {
+  tmp <- l_plt_c[[i]]
+  cat("####",sensors[i],"\n")
+  print(tmp)
+  cat("\n\n")
+}
+
+```
+
+We can see that in both datasets the RUL-sensors correspondence bears a lot of nonlinearity.
+We can also observe that sensors in the complicated dataset are less homogenous which may
+be caused by the two different faults present in the data as well as different operational settings.
+
+### Target variable (RUL) {.tabset}
+
+We may finally examine the variable we want to predict:
+
+#### Simple dataset
+
+```{r target simple}
+# maximum RUL for simple ds
+m_s <- data1 %>%
+  group_by(unit_no) %>% 
+  summarise(max_RUL = max(RUL))%>% 
+  ggplot() +
+  geom_histogram(aes(x = max_RUL), bins = 20, color = "white", fill = "steelblue")+
+  ggtitle("Distribution of maximal RUL")+
+  xlab("maximal RUL")+
+  theme(panel.background  = NULL)
+
+# all RUL simple
+a_s <- data1 %>%
+  ggplot() +
+  geom_histogram(aes(x = RUL), bins = 20, color = "white", fill = "steelblue")+
+  ggtitle("Distribution of all RUL")+ 
+  theme(panel.background  = NULL)+
+  ylab("")
+
+ggarrange(m_s,a_s)
+
+```
+
+#### Complicated dataset
+
+```{r target Complicated}
+# maximum RUL for simple ds
+m_c <- data4 %>%
+  group_by(unit_no,setting) %>% 
+  summarise(max_RUL = max(RUL))%>% 
+  ggplot() +
+  geom_histogram(aes(x = max_RUL), bins = 20, color = "white", fill = "steelblue")+
+  facet_grid(.~ setting)+
+  ggtitle("Distribution of maximal RUL", subtitle = "by setting")+
+  xlab("maximal RUL")+
+  theme(panel.background  = NULL)
+
+
+m_c
+```
+

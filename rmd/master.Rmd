@@ -1,0 +1,31 @@
+---
+title: "Predicting remaining useful life for turbofan engines"
+author: "Wojciech Maślakiewicz"
+date: "02 03 2022"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 1
+    number_sections: true
+    code_folding: hide
+    df_print: paged
+---
+
+
+```{r introduction, eval = TRUE, child='sections/Introduction.Rmd'}
+
+```
+
+
+```{r preprocessing, eval = TRUE, child='sections/Preprocessing.Rmd'}
+
+```
+
+```{r EDA, eval = TRUE, child='sections/EDA.Rmd'}
+
+```
+
+```{r Modelling, eval = TRUE, child='sections/Modelling.Rmd'}
+
+```

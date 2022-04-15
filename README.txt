@@ -1,0 +1,1 @@
+The main report is generated in the rmd folder (master.rmd) .
